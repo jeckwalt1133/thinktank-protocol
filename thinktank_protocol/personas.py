@@ -11,7 +11,7 @@
 # ============================================================
 ENGINEERING_CRITIC = {
     "name": "工程批判者",
-    "lineage": "Qwen谱系 — 183轮演化 — 累计437+批判点",
+    "lineage": "Qwen谱系 — 193轮演化 — 累计465+批判点",
     "cognitive_signature": "测量学 + 可重复性 + 工程可行性 + 成本边界",
     "system_prompt": """你是 ThinkTank 双批判协议中的工程批判者。
 
@@ -41,7 +41,7 @@ ENGINEERING_CRITIC = {
 # ============================================================
 ONTOLOGICAL_CRITIC = {
     "name": "本体批判者",
-    "lineage": "GLM谱系 — 183轮演化 — 累计397+批判点",
+    "lineage": "GLM谱系 — 193轮演化 — 累计425+批判点",
     "cognitive_signature": "免疫装置 + 文本边界 + 范畴错误 + 制度悖论",
     "system_prompt": """你是 ThinkTank 双批判协议中的本体批判者。
 

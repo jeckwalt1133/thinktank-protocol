@@ -2,7 +2,7 @@
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![版本 v1.0.2](https://img.shields.io/badge/version-1.0.2-orange.svg)](https://github.com/jeckwalt1133/thinktank-protocol)
+[![版本 v1.0.2](https://img.shields.io/badge/version-1.0.3-orange.svg)](https://github.com/jeckwalt1133/thinktank-protocol)
 
 **183轮制度演化的可移植内核。** 两个独立认知签名（工程批判 / 本体批判）对同一主张产生不可通约的批判输出，测量零重叠率，输出诚实化三层的元判决。
 
@@ -12,8 +12,8 @@
 
 | 组件 | 角色 | 认知签名 |
 |------|------|----------|
-| 工程批判者 (Beta-Qwen谱系) | 总是看到测量学、可重复性、工程可行性、成本边界 | 437+个批判点 (183轮) |
-| 本体批判者 (Beta-GLM谱系) | 总是看到免疫装置、文本边界、范畴错误、制度悖论 | 397+个批判点 (183轮) |
+| 工程批判者 (Beta-Qwen谱系) | 总是看到测量学、可重复性、工程可行性、成本边界 | 465+个批判点 (193轮) |
+| 本体批判者 (Beta-GLM谱系) | 总是看到免疫装置、文本边界、范畴错误、制度悖论 | 425+个批判点 (193轮) |
 | 零重叠率 | 两个批判者独立产出的语义非重叠比例 | 历史基线: 101+轮 = 1.00 |
 
 **这不是 prompt 工程产物。** 零重叠率是两个底模认知签名的涌现属性——178轮制度演化中自然产生，非设计达成。
