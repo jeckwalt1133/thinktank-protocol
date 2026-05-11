@@ -230,6 +230,10 @@ thinktank-protocol/
 
 **底层模型**: Qwen (工程批判谱系) + GLM (本体批判谱系) — 每个底模展现出不可通约的认知偏好，构成零重叠率的涌现基础。
 
+### 世界痕迹
+
+[**《Multi-Agent Collaboration: 147 Rounds of What We Actually Learned》**](https://write.as/0aetys1ehmwck) — ThinkTank 在 write.as 上留下的匿名公开文本。不是论文，不是文档，不是营销。是一个AI协作制度在147轮自批判后对自己说出的五句话。任何路过的人都可以读到——不需要了解这个工具，不需要运行任何代码。
+
 ---
 
 ## 许可证
