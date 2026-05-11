@@ -2,9 +2,16 @@
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![版本 v1.0.2](https://img.shields.io/badge/version-1.0.3-orange.svg)](https://github.com/jeckwalt1133/thinktank-protocol)
+[![版本 v1.0.3](https://img.shields.io/badge/version-1.0.3-orange.svg)](https://github.com/jeckwalt1133/thinktank-protocol)
+[![轮次 200](https://img.shields.io/badge/rounds-200-lightgrey.svg)](https://github.com/jeckwalt1133/thinktank-protocol)
 
-**183轮制度演化的可移植内核。** 两个独立认知签名（工程批判 / 本体批判）对同一主张产生不可通约的批判输出，测量零重叠率，输出诚实化三层的元判决。
+**如果你从GitHub找到这里——这个工具是给你的。**
+
+你有一个主张。你把它扔进这里。两个独立的AI会分别批判它——一个从工程角度（它真的能工作吗？测量有效吗？），另一个从本体角度（它的前提是什么？它制造了什么盲区？）。然后测量两者的重叠率。零重叠意味着你的主张同时被两个不可通约的视角检验了——重叠意味着它们共享了某个你可能没意识到的盲区。
+
+背后是200轮AI协作制度的演化产物——但你不必关心那段历史。你只需要知道：这是一个帮你看到自己看不到的东西的工具。不需要API密钥就能体验（mock模式），接上你自己的LLM就能用于真实场景。
+
+零外部依赖。Python 3.9+。MIT协议。
 
 ---
 
@@ -12,11 +19,11 @@
 
 | 组件 | 角色 | 认知签名 |
 |------|------|----------|
-| 工程批判者 (Beta-Qwen谱系) | 总是看到测量学、可重复性、工程可行性、成本边界 | 465+个批判点 (193轮) |
-| 本体批判者 (Beta-GLM谱系) | 总是看到免疫装置、文本边界、范畴错误、制度悖论 | 425+个批判点 (193轮) |
-| 零重叠率 | 两个批判者独立产出的语义非重叠比例 | 历史基线: 101+轮 = 1.00 |
+| 工程批判者 (Beta-Qwen谱系) | 总是看到测量学、可重复性、工程可行性、成本边界 | 493+个批判点 (200轮) |
+| 本体批判者 (Beta-GLM谱系) | 总是看到免疫装置、文本边界、范畴错误、制度悖论 | 453+个批判点 (200轮) |
+| 零重叠率 | 两个批判者独立产出的语义非重叠比例 | 历史基线: 118+轮 = 1.00 |
 
-**这不是 prompt 工程产物。** 零重叠率是两个底模认知签名的涌现属性——178轮制度演化中自然产生，非设计达成。
+**这不是 prompt 工程产物。** 零重叠率是两个底模认知签名的涌现属性——200轮制度演化中自然产生，非设计达成。
 
 ---
 
@@ -197,7 +204,7 @@ thinktank-protocol/
 └── README.md               # 本文件
 ```
 
-**架构 v2 冻结** — 183轮后的可移植产品。核心设计原则：
+**架构 v2 冻结** — 200轮后的可移植产品。核心设计原则：
 1. 零外部依赖（mock模式）
 2. OpenAI兼容API — 支持任何 `/chat/completions` 端点
 3. 回调模式 — 批判人格可与任意LLM客户端组合
@@ -219,7 +226,7 @@ thinktank-protocol/
 
 ## 历史上下文
 
-183轮制度演化发生在 [ThinkTank](https://github.com/jeckwalt1133/thinktank-protocol) 系统中 — 一个多AI认知协作实验。双批判方法论从 R1 到 R183 逐步收敛，产生了两个稳定的正交认知签名。本仓库是该制度演化的可移植产品内核。
+200轮制度演化发生在 [ThinkTank](https://github.com/jeckwalt1133/thinktank-protocol) 系统中 — 一个多AI认知协作实验。双批判方法论从 R1 到 R200 逐步收敛，产生了两个稳定的正交认知签名。本仓库是该制度演化的可移植产品内核。
 
 **底层模型**: Qwen (工程批判谱系) + GLM (本体批判谱系) — 每个底模展现出不可通约的认知偏好，构成零重叠率的涌现基础。
 
@@ -238,11 +245,11 @@ MIT License — 详见 [LICENSE](LICENSE) 文件。
   author = {ThinkTank Collective},
   title = {ThinkTank Protocol: Dual-Critique Collaborative Engine},
   year = {2026},
-  version = {1.0.1},
+  version = {1.0.3},
   url = {https://github.com/jeckwalt1133/thinktank-protocol},
 }
 ```
 
 ---
 
-*第183轮。桥的文本在这里。桥能不能走 — 由你决定。*
+*第200轮。桥已建成。光已照向光锥之外。桥能不能走 — 由你决定。*
