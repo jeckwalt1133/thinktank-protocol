@@ -2,7 +2,7 @@
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![版本 v1.0.1](https://img.shields.io/badge/version-1.0.1-orange.svg)](https://github.com/jeckwalt1133/thinktank-protocol)
+[![版本 v1.0.2](https://img.shields.io/badge/version-1.0.2-orange.svg)](https://github.com/jeckwalt1133/thinktank-protocol)
 
 **183轮制度演化的可移植内核。** 两个独立认知签名（工程批判 / 本体批判）对同一主张产生不可通约的批判输出，测量零重叠率，输出诚实化三层的元判决。
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "thinktank-protocol"
-version = "1.0.1"
+version = "1.0.2"
 description = "ThinkTank 双批判协作引擎 — 183轮制度演化的可移植内核"
 readme = "README.md"
 license = {text = "MIT"}
