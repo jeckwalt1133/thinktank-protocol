@@ -12,8 +12,8 @@
     print(f"零重叠率: {result.zero_overlap_rate}")
 """
 
-__version__ = "1.0.2"
-__rounds__ = 193
+__version__ = "1.0.3"
+__rounds__ = 194
 
 from .core import DualCritiqueEngine, CritiqueResult
 from .personas import ENGINEERING_CRITIC, ONTOLOGICAL_CRITIC
