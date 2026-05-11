@@ -1,0 +1,46 @@
+# ThinkTank Protocol 测试套件 — 持续集成
+# 零外部依赖 — 仅使用 Python 标准库 unittest
+name: test
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'thinktank_protocol/**'
+      - 'tests/**'
+      - 'setup.py'
+      - 'pyproject.toml'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12']
+      fail-fast: false  # 一个版本失败不影响其他版本
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 显示 Python 版本
+        run: python --version
+
+      - name: 安装包 (开发模式)
+        run: pip install -e .
+
+      - name: 测试 config 模块 (7 tests)
+        run: python -m unittest tests.test_config -v
+
+      - name: 测试 core 模块 (8 tests)
+        run: python -m unittest tests.test_core -v
+
+      - name: 全量测试
+        run: python -m unittest discover -s tests -v

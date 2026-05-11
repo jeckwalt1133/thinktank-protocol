@@ -31,19 +31,25 @@ def call_openai_compatible(
     system_prompt: str,
     user_message: str,
     config: dict,
+    model: str = None,
 ) -> str:
-    """调用OpenAI兼容API执行单次批判"""
+    """调用OpenAI兼容API执行单次批判
+
+    Args:
+        model: 显式指定模型名。若不提供，依次尝试 config["model"] →
+               config["model_engineering"] → "gpt-4"
+    """
     import urllib.request
     import urllib.error
 
     api_key = config.get("api_key", os.environ.get("OPENAI_API_KEY", ""))
     base_url = config.get("base_url", "https://api.openai.com/v1")
-    model = config.get("model_engineering", "gpt-4")
+    _model = model or config.get("model") or config.get("model_engineering", "gpt-4")
 
     url = f"{base_url.rstrip('/')}/chat/completions"
 
     payload = json.dumps({
-        "model": model,
+        "model": _model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -85,11 +91,13 @@ def create_dual_api_critique(config: dict):
 
     def engine_callback(system_prompt: str, claim: str, context: str) -> str:
         user_msg = f"主张: {claim}\n上下文: {context}" if context else f"主张: {claim}"
-        return call_openai_compatible(system_prompt, user_msg, eng_config)
+        return call_openai_compatible(system_prompt, user_msg, eng_config,
+                                      model=eng_config["model"])
 
     def onto_callback(system_prompt: str, claim: str, context: str) -> str:
         user_msg = f"主张: {claim}\n上下文: {context}" if context else f"主张: {claim}"
-        return call_openai_compatible(system_prompt, user_msg, ont_config)
+        return call_openai_compatible(system_prompt, user_msg, ont_config,
+                                      model=ont_config["model"])
 
     return engine_callback, onto_callback
 
