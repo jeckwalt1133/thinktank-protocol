@@ -1,0 +1,393 @@
+# 常驻中继守护进程 — 贾维斯式永不停机
+# cron每5分钟自唤醒, 读任务队列→执行→写结果→推送→心跳
+# 任何节点被摧毁，下一个cron自动复活继续
+
+name: RelayDaemon
+
+on:
+  schedule:
+    # 每5分钟自唤醒 (cron: 分 时 日 月 周)
+    # 使用非整点分钟避免GitHub调度拥堵
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
+  workflow_dispatch:
+    inputs:
+      force_tasks:
+        description: '强制执行任务数 (0=自动)'
+        required: false
+        type: number
+        default: 3
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  daemon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8  # 8分钟内必须完成
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: 守护进程核心
+        id: daemon
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+          FORCE_TASKS: ${{ inputs.force_tasks || 3 }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, time, sys, base64, hashlib
+          import urllib.request, urllib.error
+          from datetime import datetime, timezone
+          import subprocess, re
+
+          # ============================================================
+          # 配置
+          # ============================================================
+          QUEUE_FILE = 'relay-queue.json'
+          STATE_FILE = 'relay-state.json'
+          RESULTS_DIR = 'results/daemon'
+          HEARTBEAT_MAX_AGE = 600  # 10分钟无心跳=节点死亡
+
+          os.makedirs(RESULTS_DIR, exist_ok=True)
+
+          TOKEN = os.environ['GH_TOKEN']
+          REPO = os.environ['GITHUB_REPOSITORY']
+          RUN_ID = os.environ['RUN_ID']
+          API_BASE = f'https://api.github.com/repos/{REPO}'
+
+          NOW = datetime.now(timezone.utc)
+          NOW_ISO = NOW.isoformat()
+          ts = NOW.strftime('%Y%m%d-%H%M%S')
+
+          print(f'╔══════════════════════════════════════════╗')
+          print(f'║  常驻中继守护进程 v2.0                   ║')
+          print(f'║  {NOW.strftime("%Y-%m-%d %H:%M:%S")} UTC                    ║')
+          print(f'╚══════════════════════════════════════════╝')
+
+          # ============================================================
+          # 工具函数
+          # ============================================================
+          def gh_api(path, method='GET', body=None):
+              url = f'{API_BASE}/{path.lstrip("/")}'
+              req = urllib.request.Request(url, method=method)
+              req.add_header('Authorization', f'Bearer {TOKEN}')
+              req.add_header('Accept', 'application/vnd.github+json')
+              req.add_header('X-GitHub-Api-Version', '2022-11-28')
+              req.add_header('User-Agent', 'RelayDaemon/2.0')
+
+              body_bytes = None
+              if body:
+                  body_bytes = json.dumps(body).encode()
+                  req.add_header('Content-Type', 'application/json')
+                  req.data = body_bytes
+
+              try:
+                  resp = urllib.request.urlopen(req, timeout=30)
+                  return json.loads(resp.read())
+              except urllib.error.HTTPError as e:
+                  err = e.read().decode()[:300]
+                  print(f'  [API] {method} {path} → HTTP {e.code}')
+                  return {'error': f'HTTP {e.code}', 'detail': err}
+
+          def get_file_content(path):
+              """读取仓库中的文件内容"""
+              result = gh_api(f'contents/{path}')
+              if 'content' in result:
+                  return base64.b64decode(result['content']).decode()
+              return None
+
+          def update_file(path, content, message):
+              """更新仓库文件"""
+              existing = gh_api(f'contents/{path}')
+              sha = existing.get('sha', '') if 'sha' in existing else ''
+
+              body = {
+                  'message': message,
+                  'content': base64.b64encode(content.encode()).decode(),
+                  'branch': 'master'
+              }
+              if sha:
+                  body['sha'] = sha
+
+              result = gh_api(f'contents/{path}', 'PUT', body)
+              return 'content' in result
+
+          # ============================================================
+          # 步骤1: 读取任务队列
+          # ============================================================
+          print('\n📋 读取任务队列...')
+          queue_data = get_file_content(QUEUE_FILE)
+          queue = {'pending': [], 'completed': [], 'failed': []}
+          if queue_data:
+              try:
+                  queue = json.loads(queue_data)
+              except:
+                  print('  ⚠️ 队列JSON损坏，重置')
+
+          pending = queue.get('pending', [])
+          completed = queue.get('completed', [])
+          failed = queue.get('failed', [])
+
+          print(f'  待处理: {len(pending)} | 已完成: {len(completed)} | 失败: {len(failed)}')
+
+          # ============================================================
+          # 步骤2: 读取之前的状态
+          # ============================================================
+          state_data = get_file_content(STATE_FILE)
+          prev_state = {'heartbeat': None, 'tasks_executed': 0, 'nodes_alive': []}
+          if state_data:
+              try:
+                  prev_state = json.loads(state_data)
+              except:
+                  pass
+
+          # ============================================================
+          # 步骤3: 执行待处理任务
+          # ============================================================
+          force_tasks = int(os.environ.get('FORCE_TASKS', 3))
+          MAX_TASKS_PER_RUN = force_tasks if force_tasks > 0 else 3
+
+          executed_count = 0
+          results_this_run = []
+
+          for task in pending[:MAX_TASKS_PER_RUN]:
+              task_id = task.get('id', f'task-{int(time.time())}')
+              task_type = task.get('type', 'unknown')
+              task_args = task.get('args', {})
+              task_ts = task.get('created_at', NOW_ISO)
+
+              print(f'\n🔧 执行: {task_id} [{task_type}]')
+
+              result = {'task_id': task_id, 'type': task_type,
+                        'started_at': NOW_ISO, 'status': 'unknown'}
+
+              try:
+                  # ── 任务类型: fetch_url ──
+                  if task_type == 'fetch_url':
+                      url = task_args.get('url', '')
+                      timeout = task_args.get('timeout', 30)
+                      print(f'  🌐 获取: {url[:100]}')
+
+                      req = urllib.request.Request(url)
+                      req.add_header('User-Agent', 'RelayDaemon/2.0')
+                      resp = urllib.request.urlopen(req, timeout=timeout)
+                      content = resp.read()
+                      status_code = resp.status
+
+                      # 保存结果
+                      url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+                      safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', url.split('/')[-1][:60])
+                      result_file = f'{RESULTS_DIR}/fetch_{ts}_{safe_name}_{url_hash}.dat'
+
+                      with open(result_file, 'wb') as f:
+                          f.write(content)
+
+                      result['status'] = 'completed'
+                      result['file'] = result_file
+                      result['size'] = len(content)
+                      result['http_status'] = status_code
+                      print(f'  ✅ {len(content)} bytes → {result_file}')
+
+                  # ── 任务类型: proxy_api ──
+                  elif task_type == 'proxy_api':
+                      api_url = task_args.get('url', '')
+                      method = task_args.get('method', 'GET')
+                      headers = {}
+                      # 支持headers_b64 (base64编码的JSON headers)
+                      if 'headers_b64' in task_args:
+                          try:
+                              headers = json.loads(base64.b64decode(task_args['headers_b64']))
+                          except: pass
+                      elif 'headers' in task_args:
+                          headers = task_args.get('headers', {})
+                      req_body = ''
+                      if 'body_b64' in task_args:
+                          try:
+                              req_body = base64.b64decode(task_args['body_b64']).decode()
+                          except: pass
+                      elif 'body' in task_args:
+                          req_body = task_args.get('body', '')
+
+                      print(f'  🔄 {method} {api_url[:100]}')
+
+                      req = urllib.request.Request(api_url, method=method)
+                      for k, v in headers.items():
+                          req.add_header(k, v)
+                      if req_body:
+                          req.data = req_body.encode()
+
+                      resp = urllib.request.urlopen(req, timeout=60)
+                      content = resp.read()
+
+                      # 大响应存入单独文件
+                      resp_limit = 100000
+                      result['status'] = 'completed'
+                      if len(content) > resp_limit:
+                          # 大响应存文件
+                          import hashlib as _hl
+                          url_hash = _hl.md5(api_url.encode()).hexdigest()[:12]
+                          resp_file = f'{RESULTS_DIR}/proxy_{ts}_{url_hash}.json'
+                          with open(resp_file, 'wb') as f:
+                              f.write(content)
+                          result['response_file'] = resp_file
+                          result['response_body'] = content.decode(errors='ignore')[:5000] + f'\n...({len(content)} bytes, 完整响应: {resp_file})'
+                      else:
+                          result['response_body'] = content.decode(errors='ignore')
+                      result['http_status'] = resp.status
+                      result['response_size'] = len(content)
+                      print(f'  ✅ {len(content)} bytes | HTTP {resp.status}')
+
+                  # ── 任务类型: dns_resolve ──
+                  elif task_type == 'dns_resolve':
+                      hostname = task_args.get('hostname', '')
+                      print(f'  🔍 DNS解析: {hostname}')
+                      import socket
+                      ips = socket.getaddrinfo(hostname, 443, socket.AF_INET,
+                                                socket.SOCK_STREAM)
+                      resolved = list(set(addr[4][0] for addr in ips))
+                      result['status'] = 'completed'
+                      result['ips'] = resolved
+                      print(f'  ✅ {resolved}')
+
+                  # ── 任务类型: health_check ──
+                  elif task_type == 'health_check':
+                      targets = task_args.get('targets', [])
+                      print(f'  💓 健康检查: {len(targets)} 个目标')
+                      import socket as sock
+                      checks = {}
+                      for t in targets:
+                          host = t.get('host', '')
+                          port = t.get('port', 443)
+                          try:
+                              s = sock.create_connection((host, port), timeout=8)
+                              s.close()
+                              checks[f'{host}:{port}'] = 'up'
+                          except Exception as e:
+                              checks[f'{host}:{port}'] = f'down({str(e)[:40]})'
+                      result['status'] = 'completed'
+                      result['checks'] = checks
+                      up_count = sum(1 for v in checks.values() if v == 'up')
+                      print(f'  ✅ {up_count}/{len(checks)} 在线')
+
+                  # ── 任务类型: shell ──
+                  elif task_type == 'shell':
+                      cmd = task_args.get('command', 'echo ok')
+                      timeout_s = task_args.get('timeout', 30)
+                      print(f'  💻 执行: {cmd[:100]}')
+                      proc = subprocess.run(cmd, shell=True, capture_output=True,
+                                            timeout=timeout_s, text=True)
+                      result['status'] = 'completed'
+                      result['stdout'] = proc.stdout[:10000]
+                      result['stderr'] = proc.stderr[:5000]
+                      result['exit_code'] = proc.returncode
+                      print(f'  ✅ exit={proc.returncode}')
+
+                  else:
+                      result['status'] = 'failed'
+                      result['error'] = f'未知任务类型: {task_type}'
+                      print(f'  ❌ {result["error"]}')
+
+              except Exception as e:
+                  result['status'] = 'failed'
+                  result['error'] = str(e)[:300]
+                  print(f'  ❌ 异常: {e}')
+
+              result['finished_at'] = datetime.now(timezone.utc).isoformat()
+              results_this_run.append(result)
+
+              if result['status'] == 'completed':
+                  completed.append({**task, 'result': result,
+                                    'completed_at': result['finished_at']})
+              else:
+                  failed.append({**task, 'result': result,
+                                 'failed_at': result['finished_at']})
+
+              executed_count += 1
+
+          # ============================================================
+          # 步骤4: 更新队列
+          # ============================================================
+          pending = pending[MAX_TASKS_PER_RUN:]  # 移除已处理的
+          new_queue = {
+              'pending': pending,
+              'completed': completed[-200:],   # 保留最近200条
+              'failed': failed[-50:],          # 保留最近50条
+              'last_updated': NOW_ISO,
+          }
+
+          queue_json = json.dumps(new_queue, ensure_ascii=False, indent=2)
+          if update_file(QUEUE_FILE, queue_json, f'🤖 daemon: 完成 {executed_count} 任务'):
+              print(f'\n📤 队列已更新: {executed_count} 任务处理完毕')
+
+          # ============================================================
+          # 步骤5: 写入心跳
+          # ============================================================
+          heartbeat = {
+              'node': f'github-actions-runner-{os.environ.get("RUNNER_NAME", "?")}',
+              'run_id': RUN_ID,
+              'heartbeat_at': NOW_ISO,
+              'tasks_executed': prev_state.get('tasks_executed', 0) + executed_count,
+              'tasks_pending': len(pending),
+              'uptime_seconds': (NOW - datetime.fromisoformat(
+                  prev_state.get('started_at', NOW_ISO).replace('Z', '+00:00')
+              )).total_seconds() if prev_state.get('started_at') else 0,
+              'nodes_alive': ['github-actions'],
+              'started_at': prev_state.get('started_at', NOW_ISO),
+              'last_error': None,
+              'results_this_run': [r['task_id'] for r in results_this_run],
+          }
+
+          state_json = json.dumps(heartbeat, ensure_ascii=False, indent=2)
+          update_file(STATE_FILE, state_json, f'💓 heartbeat: {NOW.strftime("%H:%M:%S")}')
+
+          # ============================================================
+          # 步骤6: 提交本次运行结果
+          # ============================================================
+          if results_this_run:
+              results_summary = {
+                  'run_id': RUN_ID,
+                  'timestamp': NOW_ISO,
+                  'tasks': results_this_run,
+              }
+              summary_file = f'{RESULTS_DIR}/run-{ts}.json'
+              with open(summary_file, 'w') as f:
+                  json.dump(results_summary, f, ensure_ascii=False, indent=2)
+
+              # 提交到仓库
+              os.system(f'git config user.name "RelayDaemon"')
+              os.system(f'git config user.email "daemon@relay.local"')
+              os.system(f'git add {RESULTS_DIR}/ {QUEUE_FILE} {STATE_FILE}')
+              os.system(f'git commit -m "🤖 daemon: {executed_count} tasks @{ts}" || true')
+              os.system(f'git push origin master || echo "push failed, will retry next run"')
+
+          # ============================================================
+          # 步骤7: 摘要
+          # ============================================================
+          elapsed = (datetime.now(timezone.utc) - NOW).total_seconds()
+          print(f'\n╔══════════════════════════════════════════╗')
+          print(f'║  运行完成                                ║')
+          print(f'║  执行: {executed_count} 任务              ')
+          print(f'║  剩余: {len(pending)} 待处理              ')
+          print(f'║  耗时: {elapsed:.1f}s                    ')
+          print(f'║  下次: ~5分钟后                          ║')
+          print(f'╚══════════════════════════════════════════╝')
+
+          # GitHub Step Summary
+          with open(os.environ.get('GITHUB_STEP_SUMMARY', '/dev/null'), 'w') as sm:
+              sm.write(f'## 🤖 RelayDaemon 运行报告\n\n')
+              sm.write(f'| 指标 | 值 |\n|------|-----|\n')
+              sm.write(f'| 时间 | {NOW_ISO} |\n')
+              sm.write(f'| 执行任务 | {executed_count} |\n')
+              sm.write(f'| 待处理 | {len(pending)} |\n')
+              sm.write(f'| 累计执行 | {heartbeat["tasks_executed"]} |\n')
+              sm.write(f'| 耗时 | {elapsed:.1f}s |\n')
+              for r in results_this_run:
+                  icon = '✅' if r['status'] == 'completed' else '❌'
+                  sm.write(f'| {icon} {r["task_id"]} | {r["type"]} |\n')
+
+          PYEOF
