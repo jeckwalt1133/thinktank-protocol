@@ -1,0 +1,255 @@
+# 实时 API 代理 — 长驻6小时，秒级响应
+# 与 relay-daemon.yml 配合：daemon负责批量任务，realtime负责即时响应
+# 客户端: python relay-controller.py quick --url "..." --header "..."
+
+name: RelayRealtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: '运行时长(分钟, 最大360)'
+        required: false
+        type: number
+        default: 360
+
+permissions:
+  contents: write
+
+jobs:
+  realtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6小时最大
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: 实时代理核心
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, time, sys, base64, hashlib, threading
+          import urllib.request, urllib.error, re
+          from datetime import datetime, timezone
+
+          TOKEN = os.environ['GH_TOKEN']
+          REPO = os.environ['GITHUB_REPOSITORY']
+          API_BASE = f'https://api.github.com/repos/{REPO}'
+          RESULTS_DIR = 'results/realtime'
+          QUEUE_FILE = 'relay-queue.json'
+          STATE_FILE = 'relay-state.json'
+          POLL_INTERVAL = 10  # 每10秒扫队列
+          HEARTBEAT_INTERVAL = 30  # 每30秒写心跳
+          MAX_DURATION = 3540  # ~59分钟，留余量给下次启动
+
+          os.makedirs(RESULTS_DIR, exist_ok=True)
+          NOW = datetime.now(timezone.utc)
+          START_TIME = NOW
+
+          print(f'╔══════════════════════════════════════╗')
+          print(f'║  实时代理 v1.0 — 长驻模式           ║')
+          print(f'║  {NOW.strftime("%Y-%m-%d %H:%M:%S")} UTC            ║')
+          print(f'║  轮询: {POLL_INTERVAL}s | 最大: {MAX_DURATION//60}分钟 ║')
+          print(f'╚══════════════════════════════════════╝')
+
+          def gh_api(path, method='GET', body=None):
+              url = f'{API_BASE}/{path.lstrip("/")}'
+              req = urllib.request.Request(url, method=method)
+              req.add_header('Authorization', f'Bearer {TOKEN}')
+              req.add_header('Accept', 'application/vnd.github+json')
+              req.add_header('X-GitHub-Api-Version', '2022-11-28')
+              req.add_header('User-Agent', 'RelayRealtime/1.0')
+              if body:
+                  body_bytes = json.dumps(body).encode()
+                  req.add_header('Content-Type', 'application/json')
+                  req.data = body_bytes
+              try:
+                  resp = urllib.request.urlopen(req, timeout=20)
+                  return json.loads(resp.read())
+              except urllib.error.HTTPError as e:
+                  return {'error': f'HTTP {e.code}'}
+
+          def get_file(path):
+              result = gh_api(f'contents/{path}')
+              if 'content' in result:
+                  return base64.b64decode(result['content']).decode(), result.get('sha', '')
+              return None, None
+
+          def update_file(path, content, message, sha=None):
+              body = {'message': message, 'content': base64.b64encode(content.encode()).decode(), 'branch': 'master'}
+              if sha: body['sha'] = sha
+              result = gh_api(f'contents/{path}', 'PUT', body)
+              return 'content' in result
+
+          def write_result(task_id, result_data):
+              """写入单个结果文件"""
+              path = f'{RESULTS_DIR}/{task_id}.json'
+              content = json.dumps(result_data, ensure_ascii=False)
+              update_file(path, content, f'⚡ 实时响应: {task_id}')
+
+          def update_heartbeat(task_count):
+              """更新心跳"""
+              state = {
+                  'node': f'realtime-{os.environ.get("RUNNER_NAME","?")}',
+                  'mode': 'realtime',
+                  'heartbeat_at': datetime.now(timezone.utc).isoformat(),
+                  'tasks_executed': task_count,
+                  'started_at': START_TIME.isoformat(),
+              }
+              update_file(STATE_FILE, json.dumps(state, ensure_ascii=False, indent=2),
+                         f'💓 realtime heartbeat')
+
+          def execute_task(task):
+              """执行单个任务并返回结果"""
+              task_id = task.get('id', '?')
+              task_type = task.get('type', '?')
+              task_args = task.get('args', {})
+
+              print(f'  ⚡ 执行: {task_id} [{task_type}]')
+
+              try:
+                  if task_type in ('proxy_api', 'realtime_api'):
+                      api_url = task_args.get('url', '')
+                      method = task_args.get('method', 'GET')
+                      headers = {}
+
+                      if 'headers_b64' in task_args:
+                          try:
+                              headers = json.loads(base64.b64decode(task_args['headers_b64']))
+                          except: pass
+                      elif 'headers' in task_args:
+                          headers = task_args.get('headers', {})
+
+                      req_body = ''
+                      if 'body_b64' in task_args:
+                          try:
+                              req_body = base64.b64decode(task_args['body_b64']).decode()
+                          except: pass
+                      elif 'body' in task_args:
+                          req_body = task_args.get('body', '')
+
+                      timeout = task_args.get('timeout', 30)
+
+                      req = urllib.request.Request(api_url, method=method)
+                      for k, v in headers.items():
+                          req.add_header(k, v)
+                      if req_body:
+                          req.data = req_body.encode()
+
+                      start = time.time()
+                      resp = urllib.request.urlopen(req, timeout=timeout)
+                      content = resp.read()
+                      elapsed = time.time() - start
+
+                      return {
+                          'status': 'completed',
+                          'http_status': resp.status,
+                          'response_body': content.decode(errors='ignore')[:50000],
+                          'response_size': len(content),
+                          'execution_time_ms': round(elapsed * 1000),
+                          'finished_at': datetime.now(timezone.utc).isoformat(),
+                      }
+
+                  elif task_type == 'fetch_url':
+                      url = task_args.get('url', '')
+                      req = urllib.request.Request(url)
+                      req.add_header('User-Agent', 'RelayRealtime/1.0')
+                      resp = urllib.request.urlopen(req, timeout=30)
+                      content = resp.read()
+                      return {
+                          'status': 'completed',
+                          'http_status': resp.status,
+                          'response_size': len(content),
+                          'response_body': content.decode(errors='ignore')[:10000],
+                          'finished_at': datetime.now(timezone.utc).isoformat(),
+                      }
+
+                  else:
+                      return {'status': 'failed', 'error': f'不支持的任务类型: {task_type}'}
+
+              except Exception as e:
+                  return {'status': 'failed', 'error': str(e)[:200],
+                          'finished_at': datetime.now(timezone.utc).isoformat()}
+
+          # ============================================================
+          # 主循环：每10秒扫队列，有任务立即执行
+          # ============================================================
+          tasks_done = 0
+          last_queue_sha = None
+          last_heartbeat = time.time()
+          processed_ids = set()
+
+          print(f'🔄 开始监听队列...\n')
+
+          while True:
+              # 检查是否超过最大运行时间
+              elapsed = (datetime.now(timezone.utc) - START_TIME).total_seconds()
+              if elapsed > MAX_DURATION:
+                  print(f'\n⏰ 已达最大运行时间 ({MAX_DURATION//60}分钟)，优雅退出')
+                  break
+
+              try:
+                  # 读取队列
+                  queue_content, queue_sha = get_file(QUEUE_FILE)
+                  if queue_content:
+                      queue = json.loads(queue_content)
+                      pending = queue.get('pending', [])
+
+                      # 只处理实时代理任务 (前缀 rt- 或类型 realtime_api)
+                      rt_tasks = [t for t in pending
+                                  if t.get('id', '').startswith('rt-')
+                                  or t.get('type') == 'realtime_api'
+                                  or (t.get('type') == 'proxy_api' and 'realtime' in t.get('args', {}).get('_mode', ''))]
+
+                      for task in rt_tasks:
+                          task_id = task.get('id', '?')
+                          if task_id in processed_ids:
+                              continue
+
+                          result = execute_task(task)
+                          tasks_done += 1
+                          processed_ids.add(task_id)
+
+                          # 立即写入结果文件
+                          write_result(task_id, {
+                              'task_id': task_id,
+                              'result': result,
+                              'completed_at': datetime.now(timezone.utc).isoformat(),
+                          })
+
+                          # 从队列移除已完成任务
+                          queue['pending'] = [t for t in pending if t.get('id') != task_id]
+                          queue.setdefault('completed', []).append({
+                              **task,
+                              'result': result,
+                              'completed_at': datetime.now(timezone.utc).isoformat(),
+                          })
+                          queue['last_updated'] = datetime.now(timezone.utc).isoformat()
+
+                          # 更新队列
+                          update_file(QUEUE_FILE, json.dumps(queue, ensure_ascii=False, indent=2),
+                                     f'⚡ realtime完成: {task_id}')
+                          print(f'  ✅ {task_id} → HTTP {result.get("http_status","?")} '
+                                f'({result.get("response_size",0)} bytes, {result.get("execution_time_ms",0)}ms)')
+
+                  # 心跳
+                  if time.time() - last_heartbeat > HEARTBEAT_INTERVAL:
+                      update_heartbeat(tasks_done)
+                      last_heartbeat = time.time()
+                      elapsed_m = int((datetime.now(timezone.utc) - START_TIME).total_seconds() / 60)
+                      remaining_m = MAX_DURATION // 60 - elapsed_m
+                      print(f'  💓 心跳 | 已执行: {tasks_done} | 剩余: {remaining_m}分钟')
+
+              except Exception as e:
+                  print(f'  ⚠️ 循环异常: {e}')
+
+              time.sleep(POLL_INTERVAL)
+
+          # 最终心跳
+          update_heartbeat(tasks_done)
+          print(f'\n🛑 实时代理退出 | 总执行: {tasks_done} 任务 | 运行: {elapsed:.0f}s')
+          PYEOF
